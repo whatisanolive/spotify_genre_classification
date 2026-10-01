@@ -1,0 +1,228 @@
+SPOTIFY GENRE CLASSIFICATION: PROJECT GUIDE
+===========================================
+
+Multiclass classification that predicts a track's genre from its Spotify audio
+features. The project has a Jupyter notebook for the analysis and modelling, and a
+Streamlit app that makes predictions with every trained model.
+
+
+1. FILES IN THIS FOLDER
+-----------------------
+spotify_genre_classification.ipynb   Main notebook: data, EDA, models, evaluation,
+                                     tuning, saving (already executed, outputs included)
+app.py                               Streamlit app (sliders -> predictions from all models)
+requirements.txt                     Python packages needed
+spotify_tracks.csv                   The dataset (114,000 rows, 19 MB), read by the notebook
+models/                              Saved models (created by the notebook)
+    logistic_regression.joblib
+    decision_tree.joblib
+    random_forest.joblib
+    random_forest_tuned.joblib       Best model (from GridSearchCV)
+    knn.joblib
+    svm.joblib
+    metadata.joblib                  Feature order, slider ranges, genre averages,
+                                     test scores, best RF params, top 20 songs per
+                                     genre (used by the app)
+    track_finder.joblib              Scaler + NearestNeighbors index over the sampled
+                                     tracks, for the app's "songs that sound like this"
+guide.txt                            This file
+data_explanation.md                  How the dataset is obtained and stored
+.joblib                              Empty stray file. Not used; safe to delete.
+
+
+2. SETUP
+--------
+The packages are installed in the conda environment "condavenv" (Python 3.14).
+
+    conda activate condavenv
+    pip install -r requirements.txt        (only needed on a new machine)
+
+In VS Code, select condavenv as the Python interpreter / notebook kernel.
+Otherwise you'll see "Import could not be resolved" warnings.
+
+
+3. HOW TO RUN
+-------------
+Notebook:
+    Open spotify_genre_classification.ipynb and run all cells (Run All).
+    The notebook reads the dataset from spotify_tracks.csv. If that file is
+    missing, it downloads the data from Hugging Face and saves the CSV again.
+    GridSearchCV is the slowest step, taking about a minute or two.
+    Running the notebook recreates everything in models/.
+
+App (run from inside the FA2 folder):
+    cd ADS_Assignments/FA2
+    streamlit run app.py
+    It opens in the browser at http://localhost:8501.
+    If it says "No models found", run the notebook first.
+
+
+4. DATA
+-------
+Source:  Hugging Face dataset "maharshipandya/spotify-tracks-dataset"
+         114,000 rows, 125 genres, 1,000 tracks per genre, 21 columns.
+         Stored in this folder as spotify_tracks.csv (20 columns; the extra index
+         column is dropped). Loaded with: pd.read_csv("spotify_tracks.csv")
+         Fallback if the CSV is missing:
+         load_dataset("maharshipandya/spotify-tracks-dataset", split="train")
+
+Processing steps (in this order):
+  1. Drop duplicate track_ids across the whole dataset (24,259 duplicates removed).
+     The same song often appears under several genres. Keeping every copy would put
+     identical feature rows into both train and test with different labels.
+     keep="first" means each track keeps the genre of its first occurrence.
+  2. Filter to the 5 genres: classical, hip-hop, heavy-metal, country, edm.
+  3. Sample up to 1,500 tracks per genre (random_state=42).
+
+IMPORTANT: 1,500 PER GENRE IS NOT POSSIBLE WITH THIS DATASET
+  Each genre has only 1,000 tracks, and dropping duplicates first leaves fewer:
+
+      heavy-metal   997
+      country       946
+      classical     867
+      hip-hop       842
+      edm           694
+      -----------------
+      total       4,346
+
+  The notebook uses min(1500, available), so it keeps every remaining track.
+  The classes are slightly imbalanced, which is why the notebook uses:
+    - a stratified train/test split
+    - macro-averaged precision/recall/F1 (every genre counts equally)
+
+  Alternative: filtering to the 5 genres BEFORE dropping duplicates gives
+  933-1,000 per genre (4,909 total). A track shared between, say, edm and
+  "dance" then stays as edm instead of being lost. To switch, swap the order
+  of the drop_duplicates and isin(GENRES) lines in section 3 of the notebook.
+
+Missing values: only 1 row has missing text fields (artist/album/track name).
+                None of the features used have missing values.
+
+
+5. FEATURES
+-----------
+10 audio features are used:
+
+  danceability       0-1   how suitable for dancing
+  energy             0-1   intensity / activity
+  loudness           dB    average loudness (roughly -50 to 0)
+  speechiness        0-1   amount of spoken words
+  acousticness       0-1   confidence the track is acoustic
+  instrumentalness   0-1   likelihood of no vocals
+  liveness           0-1   likelihood of a live audience
+  valence            0-1   musical positiveness
+  tempo              BPM
+  duration_ms        ms    (the app's slider uses seconds and converts)
+
+Excluded: popularity and explicit (not properties of the sound), plus the text
+columns artist/album/track name. With text columns the models would identify
+tracks by artist instead of learning from the audio. key, mode and
+time_signature were also left out: they are categorical and add little for
+these genres.
+
+Target: track_genre
+
+
+6. MODELS
+---------
+Train/test split: 80/20, stratified, random_state=42 -> 3,476 train / 870 test.
+
+Every model is a scikit-learn Pipeline:  StandardScaler -> classifier
+  - The scaler is fit on the training data only (no leakage).
+  - The saved pipeline includes the scaler, so the app passes raw feature
+    values and scaling happens automatically.
+  - Scaling matters for Logistic Regression, kNN and SVM. It has no effect on
+    the tree models, but they use the same structure for consistency.
+
+  Logistic Regression   max_iter=2000
+  Decision Tree         default settings
+  Random Forest         n_estimators=200
+  kNN                   n_neighbors=7
+  SVM                   RBF kernel, probability=True (so the app can show confidences)
+
+
+7. RESULTS (test set, 870 tracks, macro averages)
+-------------------------------------------------
+  Model                   Accuracy  Precision  Recall   F1
+  Random Forest (tuned)   0.860     0.857      0.853    0.854
+  Random Forest           0.860     0.856      0.852    0.853
+  SVM                     0.802     0.798      0.789    0.791
+  Decision Tree           0.779     0.772      0.770    0.771
+  Logistic Regression     0.775     0.768      0.760    0.761
+  kNN                     0.770     0.771      0.758    0.761
+
+Per-genre F1 (Random Forest):
+  classical     0.95   easiest: quiet, acoustic, instrumental
+  heavy-metal   0.92   highest energy + low danceability
+  country       0.83
+  hip-hop       0.79   mostly identified by high speechiness
+  edm           0.77   hardest
+
+Confusion matrix, tuned Random Forest (rows = actual, columns = predicted):
+
+               classical  hip-hop  heavy-metal  country  edm
+  classical        166        3          2          3      0
+  hip-hop            2      127          2         21     16
+  heavy-metal        0        1        187          9      3
+  country            7        1         10        163      8
+  edm                0       20          5          9    105
+
+Main confusions: hip-hop <-> edm and hip-hop -> country. These genres are all
+loud, energetic and danceable, so audio features alone can't fully separate them.
+
+The notebook also contains: a classification report per model, confusion
+matrices for all models, a model comparison bar chart, EDA boxplots, a
+genre-average heatmap, a correlation heatmap and RF feature importances.
+
+
+8. HYPERPARAMETER TUNING (GridSearchCV on Random Forest)
+--------------------------------------------------------
+  Grid:
+    n_estimators        [200, 400]
+    max_depth           [None, 10, 20]
+    min_samples_split   [2, 5]
+    min_samples_leaf    [1, 2]
+    max_features        ["sqrt", "log2"]
+  48 combinations x 5-fold stratified CV = 240 fits, scored by macro F1,
+  run on the TRAINING set only (the test set is used only for the final score).
+
+  Best: n_estimators=400, max_depth=None, max_features="sqrt",
+        min_samples_split=2, min_samples_leaf=1
+
+  Outcome: test macro F1 went from 0.8532 to 0.8537, almost no change. The best
+  settings are nearly the defaults, so the untuned Random Forest was already
+  close to its best on these features. That is itself a valid finding to report.
+
+
+9. THE STREAMLIT APP (app.py)
+-----------------------------
+Sidebar:
+  - "Start from a genre's average profile" dropdown: sets all sliders to the
+    dataset median or to the average values of one genre (a quick demo).
+  - 10 sliders, one per feature. Ranges come from the min/max of the training data.
+
+Main page:
+  - Best model's prediction (the model with the highest test F1)
+  - Majority vote across all 6 models, and how many agree
+  - Table: each model's predicted genre, its confidence, and its test accuracy/F1
+  - Grouped bar chart of class probabilities per model
+  - Expanders: full probability table, and the exact input row sent to the models
+
+Demo tips:
+  - Select "classical" or "heavy-metal": all models agree.
+  - Select "hip-hop", then raise speechiness to show a clear hip-hop prediction.
+  - Select "country": the average country profile is predicted as edm by most
+    models. The average of a genre isn't a real track, and country overlaps
+    with edm/hip-hop. This is a useful point for discussing model limitations.
+
+
+10. NOTES / TROUBLESHOOTING
+---------------------------
+- models/ is about 53 MB, mostly the two Random Forests. GitHub warns about files
+  over 50 MB and rejects files over 100 MB. If needed, reduce size with
+  joblib.dump(..., compress=3), or skip committing models/ and regenerate it
+  by running the notebook.
+- The saved models were created with scikit-learn 1.9.1. Loading them with a
+  different version may cause warnings or errors. Re-run the notebook if so.
+- "unauthenticated requests to the HF Hub" warning: harmless. The dataset is public.
+- Results are reproducible because random_state=42 is used everywhere.
